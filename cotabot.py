@@ -1,4 +1,5 @@
 import logging
+import pickle
 from functools import wraps
 
 from telegram import utils
@@ -23,9 +24,6 @@ def send_typing_action(func):
         return func(bot, update, *args, **kwargs)
         
     return command_func
-
-
-cota_chats = {}
 
 class CotaParticipant:
     def __init__(self, _id, first_name, last_name):
@@ -65,9 +63,9 @@ class MainListState:
         
     def update(self, bot):
         header = 'Lista de Cotas:'
-        if not self.iBox.cota_chat.all_cotas:
+        if not self.iBox.cota_chat.active_cotas:
             header = '*Não tem nenhuma cota!*'
-        cota_views = [CotaButtonView(cota) for cota in self.iBox.cota_chat.all_cotas.values()]
+        cota_views = [CotaButtonView(cota) for cota in self.iBox.cota_chat.active_cotas.values()]
         button_list = [cota_view.btn() for cota_view in cota_views]
         new_cota_btn = InlineKeyboardButton('Nova Cota', callback_data='new_cota')
         close_ibox_btn = InlineKeyboardButton('Fechar', callback_data='close_ibox')
@@ -159,7 +157,8 @@ class CotaChat:
         self.iBoxes = {}
         
         self.next_cota_id = 0
-        self.all_cotas = {}
+        self.active_cotas = {}
+        self.cota_history = []
         
         self.new_cota_ibox = None
         self.tmp_new_cota = None
@@ -168,29 +167,45 @@ class CotaChat:
         iBox = InteractiveBox(self)
         iBox.update(bot)
         self.iBoxes[iBox.message_id] = iBox
+        save_state()
 
     def remove_ibox(self, bot, message_id):
         bot.delete_message(self._id, message_id)
         del self.iBoxes[message_id]
+        save_state()
 
-    def bring_iBox_to_front(self, bot, message_id, reset=False):
+    def bring_iBox_to_front(self, bot, message_id, reset=False, state=None):
         iBox = self.iBoxes[message_id]
         self.remove_ibox(bot, message_id)
         iBox.message_id = None
         if reset:
             iBox.reset(bot)
+        elif state:
+            iBox.load_state(bot, state)
         else:
             iBox.update(bot)
         self.iBoxes[iBox.message_id] = iBox
+        save_state()
 
     def update(self, bot):
         for icb in self.iBoxes.values():
             icb.update(bot)
+        save_state()
+
+    def close_cota(self, cota_id):
+        self.cota_history = [self.active_cotas[cota_id]] + self.cota_history
+        del self.active_cotas[cota_id]
+        save_state()
 
     def start_cota_creation(self, bot, message_id):
+        if self.new_cota_ibox:
+            self.remove_ibox(bot, self.new_cota_ibox.message_id)
+            self.tmp_new_cota = None
+
         iBox = self.iBoxes[message_id]
-        iBox.load_state(bot, CotaCreationState(iBox))
+        self.bring_iBox_to_front(bot, message_id, state=CotaCreationState(iBox))
         self.new_cota_ibox = iBox
+        save_state()
 
     def cota_creation_update(self, bot, message):
         if not self.tmp_new_cota:
@@ -209,34 +224,39 @@ class CotaChat:
         self.tmp_new_cota = None
         self.bring_iBox_to_front(bot, self.new_cota_ibox.message_id, reset=True)
         self.new_cota_ibox = None
+        save_state()
             
     def submit_tmp_new_cota(self, bot):
-        self.all_cotas[self.tmp_new_cota._id] = self.tmp_new_cota
+        self.active_cotas[self.tmp_new_cota._id] = self.tmp_new_cota
         logger.info('Cota "%s" created', self.tmp_new_cota.name)
         self.tmp_new_cota = None
         self.next_cota_id += 1
         self.bring_iBox_to_front(bot, self.new_cota_ibox.message_id, reset=True)
         self.new_cota_ibox = None
+        save_state()
 
     def open_cota_view(self, bot, ibox_id, cota_id):
         iBox = self.iBoxes[ibox_id]
-        cota = self.all_cotas[cota_id]
+        cota = self.active_cotas[cota_id]
         iBox.current_state = CotaViewState(iBox, cota)
         iBox.update(bot)
+        save_state()
 
     def add_cota_participant(self, bot, cota_id, user):
-        cota = self.all_cotas[cota_id]
+        cota = self.active_cotas[cota_id]
         if user.id not in cota.going:
             cota.add_participant(user.id, user.first_name, user.last_name)
             self.update(bot)
             logger.info('Added participant %s to cota %s', user.id, cota.name)
+            save_state()
 
     def remove_cota_participant(self, bot, cota_id, user):
-        cota = self.all_cotas[cota_id]
+        cota = self.active_cotas[cota_id]
         if user.id in cota.going:
             cota.remove_participant(user.id)
             self.update(bot)
             logger.info('Removed participant %s to cota %s', user.id, cota.name)
+            save_state()
 
 def get_cota_chat(update):
     chat_id = update.effective_chat.id
@@ -322,9 +342,24 @@ def error(bot, update, error):
     """Log Errors caused by Updates."""
     logger.warning('%s', error)
 
+cota_chats = {}
 
+def load_state():
+    #try:
+    with open('cotas_db.pickle', 'rb') as f:
+        global cota_chats
+        cota_chats = pickle.load(f)
+    #except:
+        #cota_chats = {}
+
+def save_state():
+    with open('cotas_db.pickle', 'wb') as f:
+        pickle.dump(cota_chats, f)
 
 def main():
+
+    load_state()
+
     # Create the Updater and pass it your bot's token.
     # Make sure to set use_context=True to use the new context based callbacks
     # Post version 12 this will no longer be necessary
