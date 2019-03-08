@@ -1,5 +1,7 @@
 import logging
 import pickle
+import time
+from threading import Thread
 from functools import wraps
 
 from telegram import utils
@@ -33,11 +35,18 @@ class CotaParticipant:
         self.payed = False
 
 class Cota:
-    def __init__(self, _id, name, value=None):
+    def __init__(self, _id, creator_id, name=None, value=None):
         self._id = _id
+        self.creator_id = creator_id
         self.name = name
         self.value = value
         self.going = {}
+
+    def set_value(self, value):
+        try:
+            self.value = float(value.replace(',', '.'))
+        except:
+            self.value = None
 
     def add_participant(self, _id, first_name, last_name):
         self.going[_id] = CotaParticipant(_id, first_name, last_name)
@@ -50,7 +59,7 @@ class CotaButtonView:
         self.cota = cota
         
     def btn(self):
-        val = '' if not self.cota.value else ' - R$ {:.2f}'.format(self.cota.value)
+        val = '' if not self.cota.value else ' - R$ {:.02f}'.format(self.cota.value)
         btn_text = '[{}] {}'.format(len(self.cota.going), self.cota.name) + val
         return InlineKeyboardButton(btn_text, callback_data='show_cota {}'.format(self.cota._id))
 
@@ -110,19 +119,40 @@ class CotaViewState:
         value = self.cota.value
 
         header = '\[{}] *{}* {}\n'.format(n, self.cota.name, '- R$ {}'.format(value) if value else '')
-        sub_header = 'R$ {} para cada\n\n'.format(value/n) if (value and n>0) else '\n'
+        sub_header = '_R$ {} p/ cada_\n\n'.format(value/n) if (value and n>0) else '\n'
         text = '\n'.join(['{} - {}{}'.format(i+1, user.first_name, ' {}.'.format(user.last_name[0]) if user.last_name else '') for i, user in enumerate(self.cota.going.values())])
         if n == 0:
             text = 'Por enquanto ninguém!'
 
         not_going_btn = InlineKeyboardButton('Não vou mais', callback_data='remove_participant {}'.format(self.cota._id))
         going_btn = InlineKeyboardButton('Eu vou!', callback_data='new_participant {}'.format(self.cota._id))
+        edit_value_btn = InlineKeyboardButton('Edt. Valor', callback_data='edit_value {}'.format(self.cota._id))
+        close_cota_btn = InlineKeyboardButton('Fin. Cota', callback_data='close_cota {}'.format(self.cota._id))
         back_btn = InlineKeyboardButton('<< Voltar', callback_data='back_to_main_list')
         
         menu = [[not_going_btn, going_btn],
-                [back_btn]]
+                [back_btn, edit_value_btn, close_cota_btn]]
         
         bot.edit_message_text(header + sub_header + text + '\n', 
+                              reply_markup=InlineKeyboardMarkup(menu),
+                              chat_id=self.iBox.cota_chat._id, 
+                              message_id=self.iBox.message_id, 
+                              parse_mode=ParseMode.MARKDOWN)
+
+class CloseCotaConfirmationState:
+    def __init__(self, iBox, cota):
+        self.iBox = iBox
+        self.cota = cota
+
+    def update(self, bot):
+        header = 'Tem certeza que quer finalizar a cota?'
+
+        cancel_btn = InlineKeyboardButton('Cancelar', callback_data='cancel_closing_cota')
+        confirm_btn = InlineKeyboardButton('Sim!', callback_data='confirm_closing_cota')
+        
+        menu = [[cancel_btn, confirm_btn]]
+        
+        bot.edit_message_text(header,
                               reply_markup=InlineKeyboardMarkup(menu),
                               chat_id=self.iBox.cota_chat._id, 
                               message_id=self.iBox.message_id, 
@@ -162,6 +192,9 @@ class CotaChat:
         
         self.new_cota_ibox = None
         self.tmp_new_cota = None
+
+        self.iBox_used_to_edit_cota = None
+        self.cota_being_edited = None
         
     def new_ibox(self, bot):
         iBox = InteractiveBox(self)
@@ -197,7 +230,7 @@ class CotaChat:
         del self.active_cotas[cota_id]
         save_state()
 
-    def start_cota_creation(self, bot, message_id):
+    def start_cota_creation(self, bot, message_id, creator_id):
         if self.new_cota_ibox:
             self.remove_ibox(bot, self.new_cota_ibox.message_id)
             self.tmp_new_cota = None
@@ -205,19 +238,16 @@ class CotaChat:
         iBox = self.iBoxes[message_id]
         self.bring_iBox_to_front(bot, message_id, state=CotaCreationState(iBox))
         self.new_cota_ibox = iBox
+        self.tmp_new_cota = Cota(self.next_cota_id, creator_id)
         save_state()
 
     def cota_creation_update(self, bot, message):
-        if not self.tmp_new_cota:
-            self.tmp_new_cota = Cota(self.next_cota_id, message)
+        if not self.tmp_new_cota.name:
+            self.tmp_new_cota.name = message
             self.new_cota_ibox.current_state.state = 1
             self.bring_iBox_to_front(bot, self.new_cota_ibox.message_id)
         else:
-            try:
-                val = float(message)
-            except:
-                val = None
-            self.tmp_new_cota.value = val
+            self.tmp_new_cota.set_value(message)
             self.submit_tmp_new_cota(bot)
 
     def cancel_tmp_new_cota(self, bot):
@@ -258,6 +288,62 @@ class CotaChat:
             logger.info('Removed participant %s to cota %s', user.id, cota.name)
             save_state()
 
+    def try_to_edit_cota_value(self, bot, message_id, cota_id, user_id):
+        cota = self.active_cotas[cota_id]
+        if cota.creator_id == user_id:
+            self.iBox_used_to_edit_cota = self.iBoxes[message_id]
+            self.cota_being_edited = cota
+            self.bring_iBox_to_front(bot, message_id)
+            bot.edit_message_text('Qual o valor da cota?', self._id, self.iBox_used_to_edit_cota.message_id)
+        else:
+            self.show_not_creator_of_cota_error(bot)
+
+    def edit_cota_value(self, bot, user_id, value):
+        if self.cota_being_edited.creator_id == user_id:
+            self.cota_being_edited.set_value(value)
+            self.bring_iBox_to_front(bot, self.iBox_used_to_edit_cota.message_id,
+                state=CotaViewState(self.iBox_used_to_edit_cota, self.cota_being_edited))
+            self.iBox_used_to_edit_cota = None
+            self.cota_being_edited = None
+        else:
+            self.show_not_creator_of_cota_error(bot)
+
+    def try_to_close_cota(self, bot, message_id, cota_id, user_id):
+        cota = self.active_cotas[cota_id]
+        if cota.creator_id == user_id:
+            iBox = self.iBoxes[message_id]
+            iBox.load_state(bot, CloseCotaConfirmationState(iBox, cota))
+        else:
+            self.show_not_creator_of_cota_error(bot)
+
+    def cancel_closing_cota(self, bot, message_id, user_id):
+        iBox = self.iBoxes[message_id]
+        cota = iBox.current_state.cota
+        if cota.creator_id == user_id:
+            iBox.load_state(bot, CotaViewState(iBox, cota))
+        else:
+            self.show_not_creator_of_cota_error(bot)
+
+    def confirm_closing_cota(self, bot, message_id, user_id):
+        iBox = self.iBoxes[message_id]
+        cota = iBox.current_state.cota
+        if cota.creator_id == user_id:
+            self.close_cota(cota._id)
+            iBox.reset(bot)
+        else:
+            self.show_not_creator_of_cota_error(bot)
+        
+
+
+    def show_not_creator_of_cota_error(self, bot):
+        def show_message_on_thread(bot):
+            m = bot.send_message(self._id, 'Apenas quem criou a cota pode editar ou finalizá-la',
+                parse_mode=ParseMode.MARKDOWN)
+            time.sleep(2)
+            bot.delete_message(self._id, m.message_id)
+        Thread(target=show_message_on_thread, args=(bot,)).start()
+
+
 def get_cota_chat(update):
     chat_id = update.effective_chat.id
     
@@ -276,10 +362,12 @@ def handle_message(bot, update):
     cota_chat = get_cota_chat(update)
     if cota_chat.new_cota_ibox:
         cota_chat.cota_creation_update(bot, update.message.text)
+    if cota_chat.cota_being_edited:
+        cota_chat.edit_cota_value(bot, update.effective_user.id, update.message.text)
     
-def new_cota(bot, update, message_id):
+def new_cota(bot, update, message_id, creator_id):
     cota_chat = get_cota_chat(update)
-    cota_chat.start_cota_creation(bot, message_id)
+    cota_chat.start_cota_creation(bot, message_id, creator_id)
 
 def cancel_new_cota(bot, update):
     cota_chat = get_cota_chat(update)
@@ -308,6 +396,22 @@ def new_participant(bot, update, cota_id, user):
 def remove_participant(bot, update, cota_id, user):
     cota_chat = get_cota_chat(update)
     cota_chat.remove_cota_participant(bot, cota_id, user)
+
+def edit_cota_value(bot, update, m_id, cota_id, user_id):
+    cota_chat = get_cota_chat(update)
+    cota_chat.try_to_edit_cota_value(bot, m_id, cota_id, user_id)
+
+def close_cota(bot, update, m_id, cota_id, user_id):
+    cota_chat = get_cota_chat(update)
+    cota_chat.try_to_close_cota(bot, m_id, cota_id, user_id)
+
+def cancel_closing_cota(bot, update, m_id, user_id):
+    cota_chat = get_cota_chat(update)
+    cota_chat.cancel_closing_cota(bot, m_id, user_id)
+
+def confirm_closing_cota(bot, update, m_id, user_id):
+    cota_chat = get_cota_chat(update)
+    cota_chat.confirm_closing_cota(bot, m_id, user_id)
     
 def callback_handler(bot, update):
     query = update.callback_query
@@ -320,7 +424,7 @@ def callback_handler(bot, update):
     if request == 'show_cota':
         open_cota_view(bot, update, m_id, int(splt[1]))
     elif request == 'new_cota':
-        new_cota(bot, update, m_id)
+        new_cota(bot, update, m_id, user.id)
     elif request == 'cancel_new_cota':
         cancel_new_cota(bot, update)
     elif request == 'skip_new_cota_value':
@@ -333,6 +437,14 @@ def callback_handler(bot, update):
         new_participant(bot, update, int(splt[1]), user)
     elif request == 'remove_participant':
         remove_participant(bot, update, int(splt[1]), user)
+    elif request == 'edit_value':
+        edit_cota_value(bot, update, m_id, int(splt[1]), user.id)
+    elif request == 'close_cota':
+        close_cota(bot, update, m_id, int(splt[1]), user.id)
+    elif request == 'cancel_closing_cota':
+        cancel_closing_cota(bot, update, m_id, user.id)
+    elif request == 'confirm_closing_cota':
+        confirm_closing_cota(bot, update, m_id, user.id)
 
 def cota_help(bot, update):
     cota_chat = get_cota_chat(update)
@@ -345,12 +457,12 @@ def error(bot, update, error):
 cota_chats = {}
 
 def load_state():
-    #try:
-    with open('cotas_db.pickle', 'rb') as f:
-        global cota_chats
-        cota_chats = pickle.load(f)
-    #except:
-        #cota_chats = {}
+    try:
+        with open('cotas_db.pickle', 'rb') as f:
+            global cota_chats
+            cota_chats = pickle.load(f)
+    except:
+        cota_chats = {}
 
 def save_state():
     with open('cotas_db.pickle', 'wb') as f:
