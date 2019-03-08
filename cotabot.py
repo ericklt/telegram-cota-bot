@@ -43,6 +43,9 @@ class Cota:
 
     def add_participant(self, _id, first_name, last_name):
         self.going[_id] = CotaParticipant(_id, first_name, last_name)
+
+    def remove_participant(self, _id):
+        del self.going[_id]
         
 class CotaButtonView:
     def __init__(self, cota):
@@ -50,7 +53,7 @@ class CotaButtonView:
         
     def btn(self):
         val = '' if not self.cota.value else ' - R$ {:.2f}'.format(self.cota.value)
-        btn_text = '({}) {}'.format(len(self.cota.going), self.cota.name) + val
+        btn_text = '[{}] {}'.format(len(self.cota.going), self.cota.name) + val
         return InlineKeyboardButton(btn_text, callback_data='show_cota {}'.format(self.cota._id))
 
 
@@ -108,16 +111,18 @@ class CotaViewState:
         n = len(self.cota.going)
         value = self.cota.value
 
-        header = '*{}* - {} participantes\n'.format(self.cota.name, n)
+        header = '\[{}] *{}* {}\n'.format(n, self.cota.name, '- R$ {}'.format(value) if value else '')
         sub_header = 'R$ {} para cada\n\n'.format(value/n) if (value and n>0) else '\n'
-        text = '\n'.join(['{} - {} {}.'.format(i+1, user.first_name, user.last_name[0]) for i, user in enumerate(self.cota.going.values())])
+        text = '\n'.join(['{} - {}{}'.format(i+1, user.first_name, ' {}.'.format(user.last_name[0]) if user.last_name else '') for i, user in enumerate(self.cota.going.values())])
         if n == 0:
             text = 'Por enquanto ninguém!'
 
-        back_button = InlineKeyboardButton('<< Voltar', callback_data='back_to_main_list')
-        going_button = InlineKeyboardButton('Eu vou!', callback_data='new_participant {}'.format(self.cota._id))
+        not_going_btn = InlineKeyboardButton('Não vou mais', callback_data='remove_participant {}'.format(self.cota._id))
+        going_btn = InlineKeyboardButton('Eu vou!', callback_data='new_participant {}'.format(self.cota._id))
+        back_btn = InlineKeyboardButton('<< Voltar', callback_data='back_to_main_list')
         
-        menu = [[back_button, going_button]]
+        menu = [[not_going_btn, going_btn],
+                [back_btn]]
         
         bot.edit_message_text(header + sub_header + text + '\n', 
                               reply_markup=InlineKeyboardMarkup(menu),
@@ -127,16 +132,21 @@ class CotaViewState:
 
 
 class InteractiveBox:
-    def __init__(self, cota_chat):
+    def __init__(self, cota_chat, initial_state = None):
+        if not initial_state:
+            initial_state = MainListState(self)
         self.message_id = None
         self.cota_chat = cota_chat
         
-        self.current_state = MainListState(self)
+        self.current_state = initial_state
 
     def reset(self, bot):
-        self.current_state = MainListState(self)
+        self.load_state(bot, MainListState(self))
+
+    def load_state(self, bot, state):
+        self.current_state = state
         self.update(bot)
-    
+
     def update(self, bot):
         if not self.message_id:
             message = bot.send_message(self.cota_chat._id, "_..._", parse_mode=ParseMode.MARKDOWN)
@@ -163,21 +173,30 @@ class CotaChat:
         bot.delete_message(self._id, message_id)
         del self.iBoxes[message_id]
 
+    def bring_iBox_to_front(self, bot, message_id, reset=False):
+        iBox = self.iBoxes[message_id]
+        self.remove_ibox(bot, message_id)
+        iBox.message_id = None
+        if reset:
+            iBox.reset(bot)
+        else:
+            iBox.update(bot)
+        self.iBoxes[iBox.message_id] = iBox
+
     def update(self, bot):
         for icb in self.iBoxes.values():
             icb.update(bot)
 
     def start_cota_creation(self, bot, message_id):
         iBox = self.iBoxes[message_id]
-        iBox.current_state = CotaCreationState(iBox)
-        iBox.update(bot)
+        iBox.load_state(bot, CotaCreationState(iBox))
         self.new_cota_ibox = iBox
 
     def cota_creation_update(self, bot, message):
         if not self.tmp_new_cota:
             self.tmp_new_cota = Cota(self.next_cota_id, message)
             self.new_cota_ibox.current_state.state = 1
-            self.new_cota_ibox.update(bot)
+            self.bring_iBox_to_front(bot, self.new_cota_ibox.message_id)
         else:
             try:
                 val = float(message)
@@ -188,18 +207,16 @@ class CotaChat:
 
     def cancel_tmp_new_cota(self, bot):
         self.tmp_new_cota = None
-        self.remove_ibox(bot, self.new_cota_ibox.message_id)
+        self.bring_iBox_to_front(bot, self.new_cota_ibox.message_id, reset=True)
         self.new_cota_ibox = None
-        self.new_ibox(bot)
             
     def submit_tmp_new_cota(self, bot):
         self.all_cotas[self.tmp_new_cota._id] = self.tmp_new_cota
         logger.info('Cota "%s" created', self.tmp_new_cota.name)
         self.tmp_new_cota = None
         self.next_cota_id += 1
-        self.remove_ibox(bot, self.new_cota_ibox.message_id)
+        self.bring_iBox_to_front(bot, self.new_cota_ibox.message_id, reset=True)
         self.new_cota_ibox = None
-        self.new_ibox(bot)
 
     def open_cota_view(self, bot, ibox_id, cota_id):
         iBox = self.iBoxes[ibox_id]
@@ -213,6 +230,13 @@ class CotaChat:
             cota.add_participant(user.id, user.first_name, user.last_name)
             self.update(bot)
             logger.info('Added participant %s to cota %s', user.id, cota.name)
+
+    def remove_cota_participant(self, bot, cota_id, user):
+        cota = self.all_cotas[cota_id]
+        if user.id in cota.going:
+            cota.remove_participant(user.id)
+            self.update(bot)
+            logger.info('Removed participant %s to cota %s', user.id, cota.name)
 
 def get_cota_chat(update):
     chat_id = update.effective_chat.id
@@ -261,6 +285,10 @@ def new_participant(bot, update, cota_id, user):
     cota_chat = get_cota_chat(update)
     cota_chat.add_cota_participant(bot, cota_id, user)
 
+def remove_participant(bot, update, cota_id, user):
+    cota_chat = get_cota_chat(update)
+    cota_chat.remove_cota_participant(bot, cota_id, user)
+    
 def callback_handler(bot, update):
     query = update.callback_query
     splt = query.data.split()
@@ -283,6 +311,8 @@ def callback_handler(bot, update):
         back_to_main_list(bot, update, m_id)
     elif request == 'new_participant':
         new_participant(bot, update, int(splt[1]), user)
+    elif request == 'remove_participant':
+        remove_participant(bot, update, int(splt[1]), user)
 
 def cota_help(bot, update):
     cota_chat = get_cota_chat(update)
