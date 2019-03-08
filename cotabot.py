@@ -118,8 +118,8 @@ class CotaViewState:
         n = len(self.cota.going)
         value = self.cota.value
 
-        header = '\[{}] *{}* {}\n'.format(n, self.cota.name, '- R$ {}'.format(value) if value else '')
-        sub_header = '_R$ {} p/ cada_\n\n'.format(value/n) if (value and n>0) else '\n'
+        header = '\[{}] *{}* {}\n'.format(n, self.cota.name, '- R$ {:.02f}'.format(value) if value else '')
+        sub_header = '_R$ {:.02f} p/ cada_\n\n'.format(value/n) if (value and n>0) else '\n'
         text = '\n'.join(['{} - {}{}'.format(i+1, user.first_name, ' {}.'.format(user.last_name[0]) if user.last_name else '') for i, user in enumerate(self.cota.going.values())])
         if n == 0:
             text = 'Por enquanto ninguém!'
