@@ -12,6 +12,8 @@ from telegram.ext import (Updater, CommandHandler, CallbackQueryHandler,
                           MessageHandler, Filters, 
                           RegexHandler, ConversationHandler)
 
+VERSION = '1.0.0'
+
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
@@ -469,7 +471,11 @@ def callback_handler(bot, update):
 
 def cota_help(bot, update):
     cota_chat = get_cota_chat(update)
-    bot.send_message(cota_chat._id, "Tenta dar um /cotas")
+    bot.send_message(cota_chat._id, "/cotas - Inicia o bot\n/cotaversion - Versão do CotaBot")
+
+def cota_version(bot, update):
+    cota_chat = get_cota_chat(update)
+    bot.send_message(cota_chat._id, 'CotaBot - v{}'.format(VERSION))
 
 def error(bot, update, error):
     """Log Errors caused by Updates."""
@@ -505,6 +511,8 @@ def main():
     dp.add_handler(CommandHandler('help', cota_help))
 
     dp.add_handler(CommandHandler('cotas', cotas))
+
+    dp.add_handler(CommandHandler('cotaversion', cota_version))
 
     dp.add_handler(MessageHandler(Filters.text, handle_message))
     
