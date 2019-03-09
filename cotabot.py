@@ -28,11 +28,22 @@ def send_typing_action(func):
     return command_func
 
 class CotaParticipant:
-    def __init__(self, _id, first_name, last_name):
-        self._id = _id
-        self.first_name = first_name
-        self.last_name = last_name
+    def __init__(self, user):
+        self._id = user.id
+        self.first_name = user.first_name
+        self.last_name = user.last_name if user.last_name else None
         self.payed = False
+        self.n = 1
+
+    def __str__(self):
+        s = ''
+        if self.n > 1:
+            s += '\[ {} ] '.format(self.n)
+        s += '*{}*'.format(self.first_name)
+        if self.last_name:
+            s += ' *{}.*'.format(self.last_name[0])
+        
+        return s
 
 class Cota:
     def __init__(self, _id, creator_id, name=None, value=None):
@@ -42,17 +53,27 @@ class Cota:
         self.value = value
         self.going = {}
 
+    def n_going(self):
+        return sum([participant.n for participant in self.going.values()])
+
     def set_value(self, value):
         try:
             self.value = float(value.replace(',', '.'))
         except:
             self.value = None
 
-    def add_participant(self, _id, first_name, last_name):
-        self.going[_id] = CotaParticipant(_id, first_name, last_name)
+    def add_participant(self, user):
+        if user.id not in self.going:
+            self.going[user.id] = CotaParticipant(user)
+        else:
+            self.going[user.id].n += 1
 
-    def remove_participant(self, _id):
-        del self.going[_id]
+    def remove_participant(self, user):
+        if user.id in self.going:
+            if self.going[user.id].n == 1:
+                del self.going[user.id]
+            else:
+                self.going[user.id].n -= 1
         
 class CotaButtonView:
     def __init__(self, cota):
@@ -60,7 +81,7 @@ class CotaButtonView:
         
     def btn(self):
         val = '' if not self.cota.value else ' - R$ {:.02f}'.format(self.cota.value)
-        btn_text = '[{}] {}'.format(len(self.cota.going), self.cota.name) + val
+        btn_text = '[ {} ] {}'.format(self.cota.n_going(), self.cota.name) + val
         return InlineKeyboardButton(btn_text, callback_data='show_cota {}'.format(self.cota._id))
 
 
@@ -115,17 +136,19 @@ class CotaViewState:
         self.cota = cota
 
     def update(self, bot):
-        n = len(self.cota.going)
+        n = self.cota.n_going()
         value = self.cota.value
+        val_for_each = value/n if (value and n > 0) else None
 
-        header = '\[{}] *{}* {}\n'.format(n, self.cota.name, '- R$ {:.02f}'.format(value) if value else '')
-        sub_header = '_R$ {:.02f} p/ cada_\n\n'.format(value/n) if (value and n>0) else '\n'
-        text = '\n'.join(['{} - {}{}'.format(i+1, user.first_name, ' {}.'.format(user.last_name[0]) if user.last_name else '') for i, user in enumerate(self.cota.going.values())])
+        header = '\[ {} ] *{}* {}\n'.format(n, self.cota.name, '- R$ {:.02f}'.format(value) if value else '')
+        sub_header = '_R$ {:.02f} p/ cada_\n\n'.format(val_for_each) if val_for_each else '\n'
+        text = '\n'.join(['_{} -_ {}{}'.format(i+1, participant, ' ( R$ {:.02f} )'.format(val_for_each*participant.n) if (val_for_each and participant.n > 1) else '') 
+                            for i, participant in enumerate(self.cota.going.values())])
         if n == 0:
             text = 'Por enquanto ninguém!'
 
-        not_going_btn = InlineKeyboardButton('Não vou mais', callback_data='remove_participant {}'.format(self.cota._id))
-        going_btn = InlineKeyboardButton('Eu vou!', callback_data='new_participant {}'.format(self.cota._id))
+        not_going_btn = InlineKeyboardButton('Não vou mais / -1', callback_data='remove_participant {}'.format(self.cota._id))
+        going_btn = InlineKeyboardButton('Eu vou! / +1', callback_data='new_participant {}'.format(self.cota._id))
         edit_value_btn = InlineKeyboardButton('Edt. Valor', callback_data='edit_value {}'.format(self.cota._id))
         close_cota_btn = InlineKeyboardButton('Fin. Cota', callback_data='close_cota {}'.format(self.cota._id))
         back_btn = InlineKeyboardButton('<< Voltar', callback_data='back_to_main_list')
@@ -274,19 +297,17 @@ class CotaChat:
 
     def add_cota_participant(self, bot, cota_id, user):
         cota = self.active_cotas[cota_id]
-        if user.id not in cota.going:
-            cota.add_participant(user.id, user.first_name, user.last_name)
-            self.update(bot)
-            logger.info('Added participant %s to cota %s', user.id, cota.name)
-            save_state()
+        cota.add_participant(user)
+        self.update(bot)
+        logger.info('User "%s" added a participant to cota "%s"', user.first_name, cota.name)
+        save_state()
 
     def remove_cota_participant(self, bot, cota_id, user):
         cota = self.active_cotas[cota_id]
-        if user.id in cota.going:
-            cota.remove_participant(user.id)
-            self.update(bot)
-            logger.info('Removed participant %s to cota %s', user.id, cota.name)
-            save_state()
+        cota.remove_participant(user)
+        self.update(bot)
+        logger.info('User "%s" removed a participant from cota "%s"', user.first_name, cota.name)
+        save_state()
 
     def try_to_edit_cota_value(self, bot, message_id, cota_id, user_id):
         cota = self.active_cotas[cota_id]
@@ -362,7 +383,7 @@ def handle_message(bot, update):
     cota_chat = get_cota_chat(update)
     if cota_chat.new_cota_ibox:
         cota_chat.cota_creation_update(bot, update.message.text)
-    if cota_chat.cota_being_edited:
+    elif cota_chat.cota_being_edited:
         cota_chat.edit_cota_value(bot, update.effective_user.id, update.message.text)
     
 def new_cota(bot, update, message_id, creator_id):
