@@ -282,10 +282,11 @@ class CotaChat:
 
     def remove_ibox(self, bot, message_id):
         try:
-            del self.iBoxes[message_id]
             bot.delete_message(self._id, message_id)
+            del self.iBoxes[message_id]
         except:
-            logger.info('Message cannot be deleted!')
+            logger.info('Tried to delete message and failed')
+            self.show_quick_message(bot, 'Mensagens com mais de 48h tendem a não funcionar corretamente.\nTente dar um novo /cotas')
         save_state()
 
     def bring_iBox_to_front(self, bot, message_id, reset=False, state=None):
@@ -427,12 +428,15 @@ class CotaChat:
             iBox.update(bot)
 
     def show_not_creator_of_cota_error(self, bot):
-        def show_message_on_thread(bot):
-            m = bot.send_message(self._id, 'Apenas quem criou a cota pode editar ou finalizá-la',
+        self.show_quick_message(bot, 'Apenas quem criou a cota pode editar ou finalizá-la')
+
+    def show_quick_message(self, bot, message):
+        def show_message_on_thread(bot, message):
+            m = bot.send_message(self._id, message,
                 parse_mode=ParseMode.MARKDOWN)
-            time.sleep(2)
+            time.sleep(10)
             bot.delete_message(self._id, m.message_id)
-        Thread(target=show_message_on_thread, args=(bot,)).start()
+        Thread(target=show_message_on_thread, args=(bot, message)).start()
 
 
 def get_cota_chat(update):
