@@ -76,15 +76,21 @@ class Cota:
                 del self.going[user.id]
             else:
                 self.going[user.id].n -= 1
+
+    def btn_str(self):
+        val = '' if not self.value else ' - R$ {:.02f}'.format(self.value)
+        return '[ {} ] {}{}'.format(self.n_going(), self.name, val)
+
+    def __str__(self):
+        val = '' if not self.value else ' - R$ {:.02f}'.format(self.value)
+        return '\[ {} ] *{}*{}'.format(self.n_going(), self.name, val)
         
 class CotaButtonView:
     def __init__(self, cota):
         self.cota = cota
         
     def btn(self):
-        val = '' if not self.cota.value else ' - R$ {:.02f}'.format(self.cota.value)
-        btn_text = '[ {} ] {}'.format(self.cota.n_going(), self.cota.name) + val
-        return InlineKeyboardButton(btn_text, callback_data='show_cota {}'.format(self.cota._id))
+        return InlineKeyboardButton(self.cota.btn_str(), callback_data='show_cota {}'.format(self.cota._id))
 
 
 # All possible Interactive Boxes States
@@ -100,9 +106,10 @@ class MainListState:
         cota_views = [CotaButtonView(cota) for cota in self.iBox.cota_chat.active_cotas.values()]
         button_list = [cota_view.btn() for cota_view in cota_views]
         new_cota_btn = InlineKeyboardButton('Nova Cota', callback_data='new_cota')
+        history_btn = InlineKeyboardButton('Histórico', callback_data='open_history')
         close_ibox_btn = InlineKeyboardButton('Fechar', callback_data='close_ibox')
         
-        menu = [[b] for b in button_list] + [[close_ibox_btn, new_cota_btn]]
+        menu = [[b] for b in button_list] + [[close_ibox_btn, history_btn, new_cota_btn]]
         
         bot.edit_message_text(header, 
                               reply_markup=InlineKeyboardMarkup(menu),
@@ -164,6 +171,7 @@ class CotaViewState:
                               message_id=self.iBox.message_id, 
                               parse_mode=ParseMode.MARKDOWN)
 
+
 class CloseCotaConfirmationState:
     def __init__(self, iBox, cota):
         self.iBox = iBox
@@ -178,6 +186,51 @@ class CloseCotaConfirmationState:
         menu = [[cancel_btn, confirm_btn]]
         
         bot.edit_message_text(header,
+                              reply_markup=InlineKeyboardMarkup(menu),
+                              chat_id=self.iBox.cota_chat._id, 
+                              message_id=self.iBox.message_id, 
+                              parse_mode=ParseMode.MARKDOWN)
+
+class HistoryViewState:
+
+    def __init__(self, iBox):
+        self.iBox = iBox
+        self.page = 1
+        self.update_pages()
+
+    def update_pages(self):
+        h = self.iBox.cota_chat.cota_history
+        self.cota_history = [h[i:i+5] for i in range(0, len(h), 5)]
+        self.total_pages = len(self.cota_history)
+
+    def prev(self):
+        if self.page > 1:
+            self.page -= 1
+            return True
+        return False
+
+    def next(self):
+        if self.page < self.total_pages:
+            self.page += 1
+            return True
+        return False
+
+    def update(self, bot):
+        self.update_pages()
+        if self.total_pages == 0:
+            header = '*Não existem cotas no histórico!*'
+            text = ''
+        else:
+            header = 'Histórico: {} / {}\n\n'.format(self.page, self.total_pages)
+            text = '\n'.join([str(c) for c in self.cota_history[self.page - 1]])
+
+        next_btn = InlineKeyboardButton('>', callback_data='history_next_page')
+        prev_btn = InlineKeyboardButton('<', callback_data='history_prev_page')
+        exit_history_btn = InlineKeyboardButton('Sair', callback_data='back_to_main_list')
+        
+        menu = [[prev_btn, exit_history_btn, next_btn]]
+        
+        bot.edit_message_text(header + text,
                               reply_markup=InlineKeyboardMarkup(menu),
                               chat_id=self.iBox.cota_chat._id, 
                               message_id=self.iBox.message_id, 
@@ -228,8 +281,11 @@ class CotaChat:
         save_state()
 
     def remove_ibox(self, bot, message_id):
-        bot.delete_message(self._id, message_id)
-        del self.iBoxes[message_id]
+        try:
+            del self.iBoxes[message_id]
+            bot.delete_message(self._id, message_id)
+        except:
+            logger.info('Message cannot be deleted!')
         save_state()
 
     def bring_iBox_to_front(self, bot, message_id, reset=False, state=None):
@@ -356,7 +412,19 @@ class CotaChat:
         else:
             self.show_not_creator_of_cota_error(bot)
         
+    def open_history(self, bot, message_id):
+        iBox = self.iBoxes[message_id]
+        iBox.load_state(bot, HistoryViewState(iBox))
 
+    def history_next_page(self, bot, message_id):
+        iBox = self.iBoxes[message_id]
+        if iBox.current_state.next():
+            iBox.update(bot)
+
+    def history_prev_page(self, bot, message_id):
+        iBox = self.iBoxes[message_id]
+        if iBox.current_state.prev():
+            iBox.update(bot)
 
     def show_not_creator_of_cota_error(self, bot):
         def show_message_on_thread(bot):
@@ -435,6 +503,18 @@ def cancel_closing_cota(bot, update, m_id, user_id):
 def confirm_closing_cota(bot, update, m_id, user_id):
     cota_chat = get_cota_chat(update)
     cota_chat.confirm_closing_cota(bot, m_id, user_id)
+
+def open_history(bot, update, m_id):
+    cota_chat = get_cota_chat(update)
+    cota_chat.open_history(bot, m_id)
+
+def history_next_page(bot, update, m_id):
+    cota_chat = get_cota_chat(update)
+    cota_chat.history_next_page(bot, m_id)
+
+def history_prev_page(bot, update, m_id):
+    cota_chat = get_cota_chat(update)
+    cota_chat.history_prev_page(bot, m_id)
     
 def callback_handler(bot, update):
     query = update.callback_query
@@ -468,6 +548,12 @@ def callback_handler(bot, update):
         cancel_closing_cota(bot, update, m_id, user.id)
     elif request == 'confirm_closing_cota':
         confirm_closing_cota(bot, update, m_id, user.id)
+    elif request == 'open_history':
+        open_history(bot, update, m_id)
+    elif request == 'history_next_page':
+        history_next_page(bot, update, m_id)
+    elif request == 'history_prev_page':
+        history_prev_page(bot, update, m_id)
 
 def cota_help(bot, update):
     cota_chat = get_cota_chat(update)
