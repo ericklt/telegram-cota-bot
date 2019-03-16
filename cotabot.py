@@ -257,7 +257,10 @@ class InteractiveBox:
         if not self.message_id:
             message = bot.send_message(self.cota_chat._id, "_..._", parse_mode=ParseMode.MARKDOWN)
             self.message_id = message.message_id
-        self.current_state.update(bot)
+        try:
+            self.current_state.update(bot)
+        except:
+            logger.warning('iBox %d could not be updated', self.message_id)
 
 class CotaChat:
     def __init__(self, _id):
@@ -304,10 +307,8 @@ class CotaChat:
 
     def update(self, bot):
         for icb in self.iBoxes.values():
-            try:
-                icb.update(bot)
-            except:
-                logger.warning('iBox %d could not be updated', icb.message_id)
+            icb.update(bot)
+
         save_state()
 
     def close_cota(self, cota_id):
