@@ -12,7 +12,7 @@ from telegram.ext import (Updater, CommandHandler, CallbackQueryHandler,
                           MessageHandler, Filters, 
                           RegexHandler, ConversationHandler)
 
-VERSION = '1.0.0'
+VERSION = '1.0.1'
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -304,7 +304,10 @@ class CotaChat:
 
     def update(self, bot):
         for icb in self.iBoxes.values():
-            icb.update(bot)
+            try:
+                icb.update(bot)
+            except:
+                logger.warning('iBox %d could not be updated', icb.message_id)
         save_state()
 
     def close_cota(self, cota_id):
@@ -359,14 +362,12 @@ class CotaChat:
         cota.add_participant(user)
         self.update(bot)
         logger.info('User "%s" added a participant to cota "%s"', user.first_name, cota.name)
-        save_state()
 
     def remove_cota_participant(self, bot, cota_id, user):
         cota = self.active_cotas[cota_id]
         cota.remove_participant(user)
         self.update(bot)
         logger.info('User "%s" removed a participant from cota "%s"', user.first_name, cota.name)
-        save_state()
 
     def try_to_edit_cota_value(self, bot, message_id, cota_id, user_id):
         cota = self.active_cotas[cota_id]
