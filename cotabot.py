@@ -162,17 +162,23 @@ class CotaViewState:
         self.iBox = iBox
         self.cota = cota
 
+    
+
     def update(self, bot):
         n = self.cota.n_going()
         name, value = self.cota.name, self.cota.value
         description, cota_type = self.cota.description, self.cota.cota_type
 
-        total_value = value if cota_type == COM_OBJETIVO else n * value
-        val_for_each = value if cota_type == VAQUINHA else (value / n if (value and n > 0) else None)
+        if cota_type == COM_OBJETIVO:
+            total_value = value
+            val_for_each = value / n if (value and n > 0) else None
+       	else:
+            total_value = value * n if value else None
+            val_for_each = value
 
         header = '\[ {} ] *{}* {}\n'.format(n, name, '- R$ {:.02f}'.format(total_value) if total_value else '')
-        sub_header = '_R$ {:.02f} p/ cada_\n\n'.format(val_for_each if val_for_each else '\n')
-        description_header = '{}\n\n'.format(description if description else '\n')
+        sub_header = '_R$ {:.02f} p/ cada_\n\n'.format(val_for_each) if val_for_each else '\n'
+        description_header = '{}\n\n'.format(description) if description else ''
         participants_header = '--------------------------------\n*Participantes*:\n\n'
         text = '\n'.join([
             '_{} -_ {}{}{}'.format(
