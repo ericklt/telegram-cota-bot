@@ -20,6 +20,11 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 
 logger = logging.getLogger(__name__)
 
+# Types of cota ----
+VAQUINHA = 'V'
+COM_OBJETIVO = 'O'
+# ------------------
+
 def send_typing_action(func):
     
     @wraps(func)
@@ -48,11 +53,13 @@ class CotaParticipant:
         return s
 
 class Cota:
-    def __init__(self, _id, creator_id, name=None, value=None):
+    def __init__(self, _id, creator_id, cota_type=VAQUINHA, name=None, value=None, description=None):
         self._id = _id
         self.creator_id = creator_id
+        self.cota_type = cota_type
         self.name = name
         self.value = value
+        self.description = description
         self.going = {}
 
     def n_going(self):
@@ -122,14 +129,25 @@ class CotaCreationState:
         self.iBox = iBox
         self.state = 0
 
+    def next_state(self):
+        self.state += 1
+
     def update(self, bot):
         cancel_button = InlineKeyboardButton('Cancelar', callback_data='cancel_new_cota')
         if self.state == 0:
+            header = 'É uma vaquinha ou cota com objetivo?'
+            button_list = [[InlineKeyboardButton('Vaquinha', callback_data='create_vaquinha'),
+                            InlineKeyboardButton('C/ Objetivo', callback_data='create_cota_with_objective')], 
+                            [cancel_button]]
+        elif self.state == 1:
             header = 'Qual o nome da cota?'
             button_list = [[cancel_button]]
-        elif self.state == 1:
+        elif self.state == 2:
             header = 'Quanto custa a cota?'
-            button_list = [[cancel_button, InlineKeyboardButton('Pular >>', callback_data='skip_new_cota_value')]]
+            button_list = [[cancel_button, InlineKeyboardButton('Pular >>', callback_data='skip_cota_creation_step')]]
+        elif self.state == 3:
+            header = 'Alguma descrição para a cota?'
+            button_list = [[cancel_button, InlineKeyboardButton('Pular >>', callback_data='skip_cota_creation_step')]]
         else:
             return
 
@@ -146,26 +164,40 @@ class CotaViewState:
 
     def update(self, bot):
         n = self.cota.n_going()
-        value = self.cota.value
-        val_for_each = value/n if (value and n > 0) else None
+        name, value = self.cota.name, self.cota.value
+        description, cota_type = self.cota.description, self.cota.cota_type
 
-        header = '\[ {} ] *{}* {}\n'.format(n, self.cota.name, '- R$ {:.02f}'.format(value) if value else '')
-        sub_header = '_R$ {:.02f} p/ cada_\n\n'.format(val_for_each) if val_for_each else '\n'
-        text = '\n'.join(['_{} -_ {}{}'.format(i+1, participant, ' ( R$ {:.02f} )'.format(val_for_each*participant.n) if (val_for_each and participant.n > 1) else '') 
-                            for i, participant in enumerate(self.cota.going.values())])
+        total_value = value if cota_type == COM_OBJETIVO else n * value
+        val_for_each = value if cota_type == VAQUINHA else (value / n if (value and n > 0) else None)
+
+        header = '\[ {} ] *{}* {}\n'.format(n, name, '- R$ {:.02f}'.format(total_value) if total_value else '')
+        sub_header = '_R$ {:.02f} p/ cada_\n\n'.format(val_for_each if val_for_each else '\n')
+        description_header = '{}\n\n'.format(description if description else '\n')
+        participants_header = '--------------------------------\n*Participantes*:\n\n'
+        text = '\n'.join([
+            '_{} -_ {}{}{}'.format(
+                i+1, 
+                participant, 
+                ' ( R$ {:.02f} )'.format(val_for_each*participant.n) if (val_for_each and participant.n > 1) else '',
+                ' - PAGO' if participant.payed else ''
+            )         
+            for i, participant in enumerate(self.cota.going.values())
+        ])
         if n == 0:
             text = 'Por enquanto ninguém!'
 
         not_going_btn = InlineKeyboardButton('Não vou mais / -1', callback_data='remove_participant {}'.format(self.cota._id))
         going_btn = InlineKeyboardButton('Eu vou! / +1', callback_data='new_participant {}'.format(self.cota._id))
+        payed_btn = InlineKeyboardButton('Paguei / Não Paguei', callback_data='payed {}'.format(self.cota._id))
         edit_value_btn = InlineKeyboardButton('Edt. Valor', callback_data='edit_value {}'.format(self.cota._id))
         close_cota_btn = InlineKeyboardButton('Fin. Cota', callback_data='close_cota {}'.format(self.cota._id))
         back_btn = InlineKeyboardButton('<< Voltar', callback_data='back_to_main_list')
         
         menu = [[not_going_btn, going_btn],
+                [payed_btn],
                 [back_btn, edit_value_btn, close_cota_btn]]
         
-        bot.edit_message_text(header + sub_header + text + '\n', 
+        bot.edit_message_text(header + sub_header + description_header + participants_header + text + '\n', 
                               reply_markup=InlineKeyboardMarkup(menu),
                               chat_id=self.iBox.cota_chat._id, 
                               message_id=self.iBox.message_id, 
@@ -328,12 +360,22 @@ class CotaChat:
         save_state()
 
     def cota_creation_update(self, bot, message):
-        if not self.tmp_new_cota.name:
+        cota_state = self.new_cota_ibox.current_state
+
+        if cota_state.state == 0:
+            self.tmp_new_cota.cota_type = message
+        elif cota_state.state == 1:
             self.tmp_new_cota.name = message
-            self.new_cota_ibox.current_state.state = 1
-            self.bring_iBox_to_front(bot, self.new_cota_ibox.message_id)
-        else:
+        elif cota_state.state == 2:
             self.tmp_new_cota.set_value(message)
+        elif cota_state.state == 3:
+            self.tmp_new_cota.description = message
+            
+
+        cota_state.next_state()
+        self.bring_iBox_to_front(bot, self.new_cota_ibox.message_id)
+
+        if cota_state.state >= 4:
             self.submit_tmp_new_cota(bot)
 
     def cancel_tmp_new_cota(self, bot):
@@ -369,6 +411,13 @@ class CotaChat:
         cota.remove_participant(user)
         self.update(bot)
         logger.info('User "%s" removed a participant from cota "%s"', user.first_name, cota.name)
+
+    def payed_or_not(self, bot, cota_id, user):
+        cota = self.active_cotas[cota_id]
+        if user.id in cota.going:
+	        cota.going[user.id].payed = not cota.going[user.id].payed
+	        self.update(bot)
+	        logger.info('User "%s" on cota "%s" set payed status to "%s"', user.first_name, cota.name, cota.going[user.id].payed)
 
     def try_to_edit_cota_value(self, bot, message_id, cota_id, user_id):
         cota = self.active_cotas[cota_id]
@@ -457,7 +506,10 @@ def cotas(bot, update):
 
 def handle_message(bot, update):
     cota_chat = get_cota_chat(update)
-    if cota_chat.new_cota_ibox:
+    if cota_chat.new_cota_ibox \
+            and update.effective_user.id == cota_chat.tmp_new_cota.creator_id \
+            and cota_chat.new_cota_ibox.current_state.state != 0:
+
         cota_chat.cota_creation_update(bot, update.message.text)
     elif cota_chat.cota_being_edited:
         cota_chat.edit_cota_value(bot, update.effective_user.id, update.message.text)
@@ -470,7 +522,11 @@ def cancel_new_cota(bot, update):
     cota_chat = get_cota_chat(update)
     cota_chat.cancel_tmp_new_cota(bot)
 
-def skip_cota_value(bot, update):
+def set_new_cota_type(bot, update, t):
+    cota_chat = get_cota_chat(update)
+    cota_chat.cota_creation_update(bot, t)
+
+def skip_cota_creation_step(bot, update):
     cota_chat = get_cota_chat(update)
     cota_chat.cota_creation_update(bot, None)
 
@@ -493,6 +549,10 @@ def new_participant(bot, update, cota_id, user):
 def remove_participant(bot, update, cota_id, user):
     cota_chat = get_cota_chat(update)
     cota_chat.remove_cota_participant(bot, cota_id, user)
+
+def payed_or_not(bot, update, cota_id, user):
+    cota_chat = get_cota_chat(update)
+    cota_chat.payed_or_not(bot, cota_id, user)
 
 def edit_cota_value(bot, update, m_id, cota_id, user_id):
     cota_chat = get_cota_chat(update)
@@ -536,8 +596,12 @@ def callback_handler(bot, update):
         new_cota(bot, update, m_id, user.id)
     elif request == 'cancel_new_cota':
         cancel_new_cota(bot, update)
-    elif request == 'skip_new_cota_value':
-        skip_cota_value(bot, update)
+    elif request == 'create_vaquinha':
+    	set_new_cota_type(bot, update, VAQUINHA)
+    elif request == 'create_cota_with_objective':
+    	set_new_cota_type(bot, update, COM_OBJETIVO)
+    elif request == 'skip_cota_creation_step':
+        skip_cota_creation_step(bot, update)
     elif request == 'close_ibox':
         close_ibox(bot, update, m_id)
     elif request == 'back_to_main_list':
@@ -546,6 +610,8 @@ def callback_handler(bot, update):
         new_participant(bot, update, int(splt[1]), user)
     elif request == 'remove_participant':
         remove_participant(bot, update, int(splt[1]), user)
+    elif request == 'payed':
+        payed_or_not(bot, update, int(splt[1]), user)
     elif request == 'edit_value':
         edit_cota_value(bot, update, m_id, int(splt[1]), user.id)
     elif request == 'close_cota':
